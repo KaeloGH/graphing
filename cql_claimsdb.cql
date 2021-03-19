@@ -30,8 +30,9 @@
 // dbms.directories.data=/usr/local/data
 
 // :SERVER change-password
-// ./cypher-shell -u neo4j -p newPassword
-./cypher-shell -u neo4j -p NewPassword
+// Logon credentials for the local neo4j terminal
+cypher-shell -u neo4j -p NewPassword
+C:\Users\christo.strydom\AppData\Local\Neo4j\Relate\Data\dbmss\dbms-dfc91feb-eeb1-4c1c-bb5b-c3a01a117a31\import
 // journalctl -e -u neo4j
 
 // cd /usr/local/data
@@ -39,16 +40,16 @@
 // sudo chown -R neo4j:neo4j /media/lnr-ai/neo4j/data
 // seg_l3_num = [312,313,321,322,323,324,325,333,336]
 
-./cypher-shell -u neo4j -p newPassword
+// ./cypher-shell -u neo4j -p newPassword
 
 // https://linuxize.com/post/how-to-add-swap-space-on-ubuntu-18-04/
 // https://www.tecmint.com/clear-ram-memory-cache-buffer-and-swap-space-on-linux/
 // CLEAR swap space: swapoff -a && swapon -a
 
-CREATE CONSTRAINT ON (c:Client) ASSERT c.dedupestatic IS UNIQUE;
-CREATE CONSTRAINT ON (m:Merchant) ASSERT m.franchisename IS UNIQUE;
-CREATE CONSTRAINT ON (s:Segment) ASSERT s.seg_l3_num IS UNIQUE;
-CREATE CONSTRAINT ON (c:Company) ASSERT c.companyname IS UNIQUE;
+CREATE CONSTRAINT ON (c:Condition) ASSERT c.icd10_fk IS UNIQUE;
+CREATE CONSTRAINT ON (p:Practice) ASSERT p.practice_no IS UNIQUE;
+CREATE CONSTRAINT ON (p:Patient) ASSERT p.ms_fk_id IS UNIQUE;
+CREATE CONSTRAINT ON (m:Member) ASSERT m.ms_fk IS UNIQUE;
 
 MATCH (c:Client)
 WHERE NOT c.seg_l3_num IN [312,313,321,322,323,324,325,333,336]
@@ -66,7 +67,7 @@ DETACH DELETE c;
 MATCH (c:Segment)
 DETACH DELETE c;
 
-CALL apoc.periodic.iterate("MATCH (c:Client) RETURN c", "DETACH DELETE c", {batchSize:500})
+CALL apoc.periodic.iterate("MATCH (p:Patient) RETURN p", "DETACH DELETE p", {batchSize:500})
 yield batches, total return batches, total;
 
 CALL apoc.periodic.iterate("MATCH (m:Merchant) RETURN m", "DETACH DELETE m", {batchSize:500})
@@ -75,18 +76,258 @@ yield batches, total return batches, total;
 MATCH (m:Merchant)
 DETACH DELETE m;
 
-// <!-- Create the Client node here: -->
+// -Condition-------------------------------------------------------------------------------------------------------
+CALL apoc.periodic.iterate("MATCH (c:Condition) RETURN c", "DETACH DELETE c", {batchSize:500})
+yield batches, total return batches, total;
+
 USING PERIODIC COMMIT 500
-LOAD CSV WITH HEADERS FROM 'file:///clientswipes_202003.csv' AS row
-MERGE (c:Client {dedupestatic: row.Dedupegroup})
-ON CREATE SET c.totaltransactionamount = toFloat(row.TransactionAmount),
-c.totaltransactioncount = 1,
-c.seg_l3_num=toInteger(row.Seg_L3_Num),
-c.seg_l3_str=row.Seg_L3_STR,
-c.period=row.period
-ON MATCH SET c.totaltransactioncount = c.totaltransactioncount + 1, 
-c.totaltransactionamount=c.totaltransactionamount+toFloat(row.TransactionAmount)
+LOAD CSV WITH HEADERS FROM 'file:///icd10_fk_df.csv' AS row
+MERGE (c:Condition {icd10_fk: row.icd10_fk})
+ON CREATE SET c.icd10_descr = row.icd10_descr,
+c.icd10_group_description = row.icd10_group_description,
+c.claimed_amount = toFloat(row.claimed_amount),
+c.occurence = 1
+ON MATCH SET c.occurence = c.occurence + 1,
+c.claimed_amount = c.claimed_amount + toFloat(row.claimed_amount)
 RETURN count(c);
+
+// -Patient-------------------------------------------------------------------------------------------------
+CALL apoc.periodic.iterate("MATCH (p:Patient) RETURN p", "DETACH DELETE p", {batchSize:500})
+yield batches, total return batches, total;
+
+USING PERIODIC COMMIT 500
+LOAD CSV WITH HEADERS FROM 'file:///icd10_fk_df.csv' AS row
+MERGE (p:Patient {ms_fk_id: row.ms_fk_id})
+ON CREATE SET p.dependent_no = row.dependent_no,
+p.dep_type = row.dep_type,
+p.gender = row.gender,
+p.first_name=row.first_name,
+p.surname=row.surname,
+p.birth_date=row.birth_date,
+p.occurence=1,
+p.claimed_amount = toFloat(row.claimed_amount)
+ON MATCH SET p.occurence = p.occurence + 1,
+p.claimed_amount = p.claimed_amount + toFloat(row.claimed_amount)
+RETURN count(p);
+
+// -Practice----------------------------------------------------------------------------------------------------
+CALL apoc.periodic.iterate("MATCH (p:Practice) RETURN p", "DETACH DELETE p", {batchSize:500})
+yield batches, total return batches, total;
+
+USING PERIODIC COMMIT 500
+LOAD CSV WITH HEADERS FROM 'file:///icd10_fk_df.csv' AS row
+MERGE (p:Practice {practice_no: row.practice_no})
+ON CREATE SET p.pr_type = row.pr_type,
+p.pr_type_descr = row.pr_type_descr,
+p.pr_group_descr = row.pr_group_descr,
+p.occurence=1,
+p.claimed_amount = toFloat(row.claimed_amount)
+ON MATCH SET p.occurence = p.occurence + 1,
+p.claimed_amount =  p.claimed_amount + toFloat(row.claimed_amount)
+RETURN count(p);
+
+// -PRESENTED_IDC10----------------------------------------------------------------------------------------------------
+
+USING PERIODIC COMMIT 500
+LOAD CSV WITH HEADERS FROM 'file:///icd10_fk_df.csv' AS row
+MATCH (c:Condition {icd10_fk: row.icd10_fk})
+MATCH (p:Patient {ms_fk_id: row.ms_fk_id})
+MERGE (p)-[r:PRESENTED_IDC10]->(c)
+ON CREATE SET r.presentation_count = 1,
+r.claimed_amount = toFloat(row.claimed_amount)
+ON MATCH SET r.presentation_count = r.presentation_count + 1,
+r.claimed_amount = r.claimed_amount + toFloat(row.claimed_amount)
+RETURN count(*);
+
+// -DIAGNOSED_IDC10----------------------------------------------------------------------------------------------------
+
+CALL apoc.periodic.iterate("MATCH ()-[t:DIAGNOSED_IDC10]->() RETURN t", "DELETE t", {batchSize:500})
+yield batches, total return batches, total;
+
+
+USING PERIODIC COMMIT 500
+LOAD CSV WITH HEADERS FROM 'file:///icd10_fk_df.csv' AS row
+MATCH (c:Condition {icd10_fk: row.icd10_fk})
+MATCH (p:Practice {practice_no: row.practice_no})
+MERGE (p)-[r:DIAGNOSED_IDC10]->(c)
+ON CREATE SET r.diagnosis_count = 1,
+r.claimed_amount = toFloat(row.claimed_amount)
+ON MATCH SET r.diagnosis_count = r.diagnosis_count + 1,
+r.claimed_amount = r.claimed_amount + toFloat(row.claimed_amount)
+RETURN count(*);
+
+// -VISITED----------------------------------------------------------------------------------------------------
+
+USING PERIODIC COMMIT 500
+LOAD CSV WITH HEADERS FROM 'file:///icd10_fk_df.csv' AS row
+MATCH (c:Patient {ms_fk_id: row.ms_fk_id})
+MATCH (p:Practice {practice_no: row.practice_no})
+MERGE (c)-[r:VISITED]->(p)
+ON CREATE SET r.visit_count = 1,
+r.claimed_amount = toFloat(row.claimed_amount)
+ON MATCH SET r.visit_count = r.visit_count + 1,
+r.claimed_amount = r.claimed_amount + toFloat(row.claimed_amount)
+RETURN count(*);
+
+// ---------------------------------------------------------------------------------------------------------
+
+
+// 1. Here we CREATE  the SHARED_PATIENT relationship between two idc10 conditions.
+CALL apoc.periodic.iterate('MATCH (condition0:Condition)<-[p0:PRESENTED_IDC10]-(patient:Patient)-[p1:PRESENTED_IDC10]->(condition1:Condition)
+WHERE ID(condition0) < ID(condition1)
+RETURN condition0, condition1, p0, p1;
+', "MERGE (condition0)-[link:SHARED_PATIENT]-(condition1)
+ON CREATE SET link.count = 1,
+link.count0 = p0.presentation_count,
+link.count1 = p1.presentation_count, 
+link.ID0 = ID(condition0),
+link.ID1 = ID(condition1),
+link.claimed_amount0 = p0.claimed_amount,
+link.claimed_amount1 = p1.claimed_amount
+ON MATCH SET link.count = link.count + 1,
+link.count0 = link.count0+p0.presentation_count,
+link.count1 = link.count1+p1.presentation_count,
+link.claimed_amount0 = link.claimed_amount0+p0.claimed_amount,
+link.claimed_amount1 = link.claimed_amount1+p1.claimed_amount", {batchSize:10000, iterateList:true, retries:5})
+yield batches, total return batches, total;
+
+// Here we CORRECT the SHARED_PATIENT direction, which way did conditions go
+MATCH (condition0:Condition)-[spl:SHARED_PATIENT]-(condition1:Condition)
+WHERE ID(condition0)=spl.ID0 AND ID(condition1)=spl.ID1
+WITH spl.count0<spl.count1 AS mustpointright, 
+spl.count0>spl.count1 AS mustpointleft,
+NOT (startNode(spl) = condition0) as pointsleft,
+spl as relationship,(startNode(spl) = condition0) as pointsright,condition0,condition1,spl,
+spl.count0 as count0,
+spl.count1 as count1, spl.ID0 as ID0, spl.ID1 as ID1, spl.count as count, 
+ID(spl) as rel_id
+FOREACH (p IN CASE WHEN (mustpointright AND pointsleft) THEN [1] ELSE [] END |
+    DELETE relationship
+    MERGE (condition0)-[newrel:SHARED_PATIENT]->(condition1)
+        ON CREATE SET newrel.count0 = count0,
+        newrel.count1=count1,
+        newrel.ID0=ID0,
+        newrel.ID1=ID1,
+        newrel.count=count
+)
+FOREACH (p IN CASE WHEN (mustpointleft AND pointsright) THEN [1] ELSE [] END |
+    DELETE relationship
+    MERGE (condition0)<-[newrel:SHARED_PATIENT]-(condition1)
+        ON CREATE SET newrel.count0 = count0,
+        newrel.count1=count1,
+        newrel.ID0=ID0,
+        newrel.ID1=ID1, 
+        newrel.count=count
+);
+
+// Check that all directions match:
+MATCH (c0:Condition)-[rel:SHARED_PATIENT]-(c1:Condition)
+WHERE ID(c0)=rel.ID0 AND ID(c1)=rel.ID1
+WITH c0,c1,rel, rel.count0<=rel.count1 AS mustpointright, 
+rel.count0>rel.count1 AS mustpointleft,
+NOT (startNode(rel) = c0) as pointsleft,
+(startNode(rel) = c0) as pointsright
+RETURN ID(c0) as IDc0, ID(c1) as IDc1, c0.icd10_descr as c0_icd10_descr,
+c1.icd10_descr as c1_icd10_descr, rel.count0 as count0,
+rel.count0 as count1,
+mustpointright, pointsright, mustpointleft, pointsleft;
+
+
+// =ICD-10 subgraph with Louvain clustering ================================================================================================================================
+CALL gds.graph.drop('icd10_subgraph') YIELD graphName;
+
+CALL gds.graph.create.cypher(
+    'icd10_subgraph',
+    'MATCH (c0:Condition) RETURN id(c0) AS id,  c0.occurence as occurence',
+    'MATCH (c0:Condition)-[rel:SHARED_PATIENT]->(c1:Condition) WHERE rel.count>3 RETURN ID(c0) AS source, 
+    ID(c1) AS target, 
+    rel.count as count'
+)
+YIELD graphName, nodeCount, relationshipCount, createMillis;
+
+CALL gds.louvain.stream('icd10_subgraph', { relationshipWeightProperty: 'count', 
+maxLevels:10, 
+maxIterations:200, includeIntermediateCommunities:true})
+YIELD nodeId, communityId, intermediateCommunityIds
+RETURN gds.util.asNode(nodeId).icd10_descr AS icd10_descr, communityId, intermediateCommunityIds
+ORDER BY communityId DESC;
+
+CALL gds.louvain.stream('icd10_subgraph', { relationshipWeightProperty: 'count', 
+maxLevels:10, 
+maxIterations:200, includeIntermediateCommunities:true})
+YIELD nodeId, communityId, intermediateCommunityIds
+RETURN communityId, COUNT(gds.util.asNode(nodeId).icd10_descr) as count
+ORDER BY count DESC;
+
+MATCH (condition:Condition)
+WHERE EXISTS(condition.icd10_community)
+REMOVE condition.icd10_community
+RETURN condition.icd10_descr as icd10_descr, condition.icd10_community as icd10_community;
+
+CALL gds.louvain.write('icd10_subgraph', { relationshipWeightProperty: 'count', 
+maxLevels:10, 
+maxIterations:200, writeProperty: 'icd10_community' })
+YIELD communityCount, modularity, modularities;
+
+
+
+
+
+MATCH path=(condition0:Condition )-[spl:SHARED_PATIENT]->(condition1:Condition )
+with collect(path) as paths
+call apoc.gephi.add(null,'icd10_subgraph', paths, 'count', ['icd10_fk', 'icd10_descr', 'icd10_community']) yield nodes, relationships, time
+RETURN nodes, relationships, time;
+
+MATCH (c0:Condition)
+RETURN c0.icd10_descr AS icd10_descr, 
+c0.occurence AS occurence, 
+c0.claimed_amount AS claimed_amount, c0.claimed_amount/c0.occurence AS average_claimed_amount
+ORDER BY occurence ASC;
+
+
+MATCH (c0:Condition)-[s:SHARED_PATIENT]-(c1:Condition)
+WHERE s.count>10
+RETURN COUNT(c0) as icd10_community_count,c0.icd10_community as icd10_community,
+SUM(c0.icd10_community)
+ORDER BY icd10_community_count ASC;
+
+Probabilities
+MATCH (c0:Condition)-[s:SHARED_PATIENT]-(c1:Condition)
+WHERE s.count>10 AND 
+ID(c0) < ID(c1) AND
+ID(c0) <> 10 AND
+ID(c1) <> 10
+RETURN c0.icd10_descr AS c0_icd10_descr
+,c1.icd10_descr AS c1_icd10_descr
+,100*(toFloat(s.count)/toFloat(c0.occurence)) AS c1_given_c0
+,100*(toFloat(s.count)/toFloat(c1.occurence)) AS c0_given_c1
+,s.count  AS shared_count
+ORDER BY shared_count ASC;
+
+MATCH (c0:Condition)-[s:SHARED_PATIENT]-(c1:Condition)
+WHERE s.count>10
+RETURN c0.icd10_descr AS c0_icd10_descr
+,c1.icd10_descr AS c1_icd10_descr
+,c0.occurence AS c1_given_c0
+,c1.occurence AS c0_given_c1
+,s.count  AS shared_count
+ORDER BY shared_count ASC;
+
+
+MATCH (c0:Condition)-[s:SHARED_PATIENT]-(c1:Condition)
+WHERE s.count>10
+RETURN c0.icd10_descr AS c0_icd10_descr, 
+c0.occurence AS c0_occurence, 
+s.count AS shared_count,
+c1.icd10_descr AS c1_icd10_descr, 
+c1.occurence AS c1_occurence
+ORDER BY shared_count ASC;
+
+
+
+
+
+// ======================================================================================================
 
 MATCH (c:Client)
 SET c.totaltransactionamount = apoc.number.format(toFloat(c.totaltransactionamount), "###,###.00")
@@ -897,5 +1138,54 @@ RETURN row, c, m",
     r.transactionamount = r.transactionamount + toFloat(row.TransactionAmount) 
 )",{batchSize:100})
 yield batches, total return batches, total;
+
+
+// =ICD-10 subgraph with Louvain clustering ================================================================================================================================
+CALL gds.graph.drop('allco_merchant_graph') YIELD graphName;
+
+CALL gds.graph.create.cypher(
+    'allco_merchant_graph',
+    'MATCH (m0:Merchant) RETURN id(m0) AS id, m0.totaltransactionamount as totaltransactionamount, m0.totaltransactioncount as totaltransactioncount',
+    'MATCH (m0:Merchant)-[rel:ALLCO_MERCHANT_FEET_LINK]->(m1:Merchant) WHERE rel.count>3 RETURN id(m0) AS source, id(m1) AS target, rel.count as count'
+)
+YIELD graphName, nodeCount, relationshipCount, createMillis;
+
+CALL gds.louvain.stream('allco_merchant_graph', { relationshipWeightProperty: 'count', 
+maxLevels:10, 
+maxIterations:200, includeIntermediateCommunities:true})
+YIELD nodeId, communityId, intermediateCommunityIds
+RETURN gds.util.asNode(nodeId).franchisename AS franchisename, communityId, intermediateCommunityIds
+ORDER BY communityId DESC;
+
+CALL gds.louvain.stream('allco_merchant_graph', { relationshipWeightProperty: 'count', 
+maxLevels:10, 
+maxIterations:200, includeIntermediateCommunities:true})
+YIELD nodeId, communityId, intermediateCommunityIds
+RETURN communityId, COUNT(gds.util.asNode(nodeId).franchisename) as count
+ORDER BY count DESC;
+
+MATCH (merchant:Merchant)
+WHERE EXISTS(merchant.allco_merchant_community)
+REMOVE merchant.allco_merchant_community
+RETURN merchant.franchisename as franchisename, merchant.allco_merchant_community as allco_merchant_community;
+
+CALL gds.louvain.write('allco_merchant_graph', { relationshipWeightProperty: 'count', 
+maxLevels:10, 
+maxIterations:200, writeProperty: 'allco_merchant_community' })
+YIELD communityCount, modularity, modularities;
+
+// connect and push to gephi =======================================================================================================
+MATCH (m:Merchant)
+RETURN COUNT(m.allco_merchant_community) as membercount, m.allco_merchant_community as allco_merchant_community
+ORDER BY membercount ASC;
+
+MATCH (m:Merchant)
+WITH COUNT(m.allco_merchant_community) as membercount, m.allco_merchant_community as allco_merchant_community
+WHERE membercount>10
+MATCH path=(merchant0:Merchant {allco_merchant_community:allco_merchant_community})-[mfl:ALLCO_MERCHANT_FEET_LINK]->(merchant1:Merchant {allco_merchant_community:allco_merchant_community})
+with collect(path) as paths
+call apoc.gephi.add(null,'allco_merchant_graph', paths, 'count', ['companyname', 'franchisename', 'allco_merchant_community']) yield nodes, relationships, time
+RETURN nodes, relationships, time;
+
 
 

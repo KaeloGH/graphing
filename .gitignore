@@ -2,6 +2,7 @@
 *.csv
 *.xlsx
 *.png
+*.zip
 # readme.md
 
 # ignore directories
